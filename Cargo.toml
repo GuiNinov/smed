@@ -1,0 +1,13 @@
+[package]
+name = "smed"
+version = "0.1.0"
+authors = ["Gui Ninov guininov@icloud.com"]
+edition = "2024"
+
+[dependencies]
+clap = "4.5.41"
+dotenvy = "0.15.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.141"
+tera = "1.20.0"
+tokio = "1.46.1"

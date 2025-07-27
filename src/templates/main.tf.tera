@@ -1,0 +1,163 @@
+provider "aws" {
+  region = "us-east-1"
+}
+
+resource "aws_key_pair" "rke2_key" {
+  key_name   = "smed-key"
+  public_key = file("~/.ssh/id_rsa.pub")
+}
+
+resource "random_password" "rke2_token" {
+  length  = 32
+  special = false
+}
+
+locals {
+  ami_id         = "ami-09ac0b140f63d3458" # Ubuntu 22.04 (us-east-1)
+  instance_type  = "t2.micro"
+  common_tags    = { Project = "smed" }
+  rke2_token = random_password.rke2_token.result
+}
+
+resource "aws_security_group" "rke2_sg" {
+  name        = "rke2-cluster-sg"
+  description = "Allow RKE2 traffic"
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    from_port   = 9345
+    to_port     = 9345
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "ssh" {
+  name        = "allow_ssh"
+  description = "Allow SSH inbound traffic"
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # ⚠️ consider tightening this for production
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_instance" "rancher" {
+  ami                         = local.ami_id
+  instance_type               = "t2.medium"
+  key_name                    = aws_key_pair.rke2_key.key_name
+  vpc_security_group_ids      = [aws_security_group.rke2_sg.id]
+  associate_public_ip_address = true
+  user_data = templatefile("${path.module}/rancher_user_data.sh.tmpl", {
+    rke2_token = local.rke2_token
+  })
+
+
+  tags = merge(local.common_tags, { Name = "rancher-server" })
+}
+
+resource "aws_instance" "etcd" {
+  ami                         = local.ami_id
+  instance_type               = "t2.medium"
+  key_name                    = aws_key_pair.rke2_key.key_name
+  vpc_security_group_ids      = [aws_security_group.rke2_sg.id]
+  associate_public_ip_address = true
+  user_data = <<-EOT
+    #!/bin/bash
+    yum update -y
+    curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=agent sh -
+    mkdir -p /etc/rancher/rke2
+    echo "etcd: true" >> /etc/rancher/rke2/config.yaml
+    echo "server: https://${aws_instance.rancher.private_ip}:9345" >> /etc/rancher/rke2/config.yaml
+    echo "token: "$(cat /var/lib/rancher/rke2/server/node-token)"" >> /etc/rancher/rke2/config.yaml
+    systemctl enable rke2-agent
+    systemctl start rke2-agent
+  EOT
+
+  tags = merge(local.common_tags, { Name = "etcd-node" })
+}
+
+resource "aws_instance" "control_plane" {
+  ami                         = local.ami_id
+  instance_type               = "t2.medium"
+  key_name                    = aws_key_pair.rke2_key.key_name
+  vpc_security_group_ids      = [aws_security_group.rke2_sg.id]
+  associate_public_ip_address = true
+  user_data = <<-EOT
+    #!/bin/bash
+    yum update -y
+    curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=agent sh -
+    mkdir -p /etc/rancher/rke2
+    echo "control-plane: true" >> /etc/rancher/rke2/config.yaml
+    echo "server: https://${aws_instance.rancher.private_ip}:9345" >> /etc/rancher/rke2/config.yaml
+    echo "token: "$(cat /var/lib/rancher/rke2/server/node-token)"" >> /etc/rancher/rke2/config.yaml
+    systemctl enable rke2-agent
+    systemctl start rke2-agent
+  EOT
+
+  tags = merge(local.common_tags, { Name = "control-plane" })
+}
+
+resource "aws_instance" "worker" {
+  count                       = {{ worker_count }}
+  ami                         = local.ami_id
+  instance_type               = local.instance_type
+  key_name                    = aws_key_pair.rke2_key.key_name
+  vpc_security_group_ids      = [aws_security_group.rke2_sg.id]
+  associate_public_ip_address = true
+  user_data = <<-EOT
+    #!/bin/bash
+    yum update -y
+    curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=agent sh -
+    mkdir -p /etc/rancher/rke2
+    echo "server: https://${aws_instance.rancher.private_ip}:9345" >> /etc/rancher/rke2/config.yaml
+    echo "token: "$(cat /var/lib/rancher/rke2/server/node-token)"" >> /etc/rancher/rke2/config.yaml
+    systemctl enable rke2-agent
+    systemctl start rke2-agent
+  EOT
+
+  tags = merge(local.common_tags, { Name = "worker-${count.index}" })
+}
+
+output "rancher_ip" {
+  value = aws_instance.rancher.public_ip
+}
+
+output "etcd_public_ip" {
+  value = aws_instance.etcd.public_ip
+}
+
+output "etcd_private_ip" {
+  value = aws_instance.etcd.private_ip
+}
+
+
+output "control_plane_ip" {
+  value = aws_instance.control_plane.public_ip
+}
+
+output "worker_ips" {
+  value = [for w in aws_instance.worker : w.public_ip]
+}
