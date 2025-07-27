@@ -149,7 +149,7 @@ EOF", common_token, rancher_ip, rancher_ip).to_string(),
                 description: "Create RKE2 directory".to_string(),
             },
             SshCommand {
-                command: format!("tee /etc/rancher/rke2/config.yaml > /dev/null <<EOF
+                command: format!("sudo tee /etc/rancher/rke2/config.yaml > /dev/null <<EOF
 token: {}
 tls-san:
     - {}
