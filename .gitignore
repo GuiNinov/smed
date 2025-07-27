@@ -1,6 +1,6 @@
 .env
 /deployment
-!/deployment/README.md
+!deployment/README.md
 /terraform
-!/terraform/README.md
+!terraform/README.md
 /target
